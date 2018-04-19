@@ -4,21 +4,21 @@ defmodule EHealth.Contracts.Contract do
   use Ecto.Schema
   alias Ecto.UUID
 
-  @status_pending "PENDING_VERIFICATION"
   @status_verified "VERIFIED"
+  @status_terminated "TERMINATED"
 
-  def status(:pending), do: @status_pending
   def status(:verified), do: @status_verified
+  def status(:terminated), do: @status_terminated
 
   schema "contracts" do
     field(:start_date, :naive_datetime)
     field(:end_date, :naive_datetime)
     field(:status, :string)
-    field(:legal_entity_id, UUID)
-    field(:contractor_id, UUID)
+    field(:contractor_legal_entity_id, UUID)
+    field(:contractor_owner_id, UUID)
     field(:contractor_base, :string)
     field(:contractor_payment_details, :map)
-    field(:rmsp_amount, :integer)
+    field(:contractor_rmsp_amount, :integer)
     field(:external_contractor_flag, :boolean)
     field(:external_contractors, {:array, :map})
     field(:nhs_signer_id, UUID)

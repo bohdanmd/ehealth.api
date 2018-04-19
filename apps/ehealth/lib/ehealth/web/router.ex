@@ -26,11 +26,13 @@ defmodule EHealthWeb.Router do
     # plug :allow_jsonp
   end
 
+  # client_id = legal_entity_id
   pipeline :api_client_id do
     plug(:header_required, "x-consumer-metadata")
     plug(:client_id_exists)
   end
 
+  # consumer_id = user_id
   pipeline :api_consumer_id do
     plug(:header_required, "x-consumer-id")
   end
@@ -195,6 +197,8 @@ defmodule EHealthWeb.Router do
     patch("/declaration_requests/:id/actions/approve", DeclarationRequestController, :approve)
     patch("/declaration_requests/:id/actions/reject", DeclarationRequestController, :reject)
     post("/declaration_requests/:id/actions/resend_otp", DeclarationRequestController, :resend_otp)
+
+    post("/contract_requests", ContractRequestController, :create)
 
     resources(
       "/medication_request_requests",
