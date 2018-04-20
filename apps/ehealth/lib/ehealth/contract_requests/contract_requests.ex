@@ -2,7 +2,6 @@ defmodule EHealth.ContractRequests do
   @moduledoc false
 
   import EHealth.Utils.Connection, only: [get_consumer_id: 1]
-  alias Ecto.UUID
   alias EHealth.ContractRequests.ContractRequest
   alias EHealth.Divisions.Division
   alias EHealth.Employees.Employee
@@ -38,25 +37,38 @@ defmodule EHealth.ContractRequests do
   def create(headers, params) do
     user_id = get_consumer_id(headers)
 
-    with {:ok, %{"data" => data}} <- @mithril_api.get_user_roles(user_id, %{}, headers),
-         :ok <- JsonSchema.validate(:contract_request, params),
-         :ok <- user_is_owner(data),
+    with :ok <- JsonSchema.validate(:contract_request, params),
+         {:ok, %{"data" => data}} <- @mithril_api.get_user_roles(user_id, %{}, headers),
+         :ok <- user_has_role(data, "OWNER"),
          :ok <- validate_employee_divisions(params),
          :ok <- validate_external_contractors(params),
          :ok <- validate_external_contractor_flag(params),
          :ok <- validate_start_date(params),
-         :ok <- validate_end_date(params) do
-      terminate_pending_contracts(params)
+         :ok <- validate_end_date(params),
+         _ <- terminate_pending_contracts(params),
+         insert_params <-
+           params
+           |> Map.put("status", ContractRequest.status(:new))
+           |> Map.put("inserted_by", user_id)
+           |> Map.put("updated_by", user_id),
+         %Ecto.Changeset{valid?: true} = changes <- changeset(%ContractRequest{}, insert_params) do
+      Repo.insert(changes)
+    end
+  end
 
-      insert_params =
-        params
-        |> Map.put("status", ContractRequest.status(:new))
-        |> Map.put("inserted_by", user_id)
-        |> Map.put("updated_by", user_id)
+  def update(headers, params) do
+    user_id = get_consumer_id(headers)
 
-      %ContractRequest{}
-      |> changeset(insert_params)
-      |> Repo.insert()
+    with {:ok, %{"data" => data}} <- @mithril_api.get_user_roles(user_id, %{}, headers),
+         :ok <- user_has_role(data, "NHS ADMIN SIGNER"),
+         %ContractRequest{} = contract_request <- Repo.get(ContractRequest, params["id"]),
+         :ok <- validate_status(contract_request, ContractRequest.status(:new)),
+         update_params <-
+           params
+           |> Map.delete("id")
+           |> Map.put("updated_by", user_id),
+         %Ecto.Changeset{valid?: true} = changes <- update_changeset(contract_request, update_params) do
+      Repo.update(changes)
     end
   end
 
@@ -64,6 +76,12 @@ defmodule EHealth.ContractRequests do
     contract_request
     |> cast(params, @fields_required ++ @fields_optional)
     |> validate_required(@fields_required)
+  end
+
+  def update_changeset(%ContractRequest{} = contract_request, params) do
+    contract_request
+    |> cast(params, ~w(nhs_signer_base nhs_contract_price nhs_payment_method)a)
+    |> validate_number(:nhs_contract_price, greater_than: 0)
   end
 
   defp terminate_pending_contracts(params) do
@@ -82,8 +100,8 @@ defmodule EHealth.ContractRequests do
     |> Repo.update_all(set: [status: ContractRequest.status(:terminated)])
   end
 
-  defp user_is_owner(data) do
-    case Enum.find(data, &(Map.get(&1, "role_name") == "OWNER")) do
+  defp user_has_role(data, role) do
+    case Enum.find(data, &(Map.get(&1, "role_name") == role)) do
       nil -> {:error, :forbidden}
       _ -> :ok
     end
@@ -329,4 +347,7 @@ defmodule EHealth.ContractRequests do
          ]}
     end
   end
+
+  defp validate_status(%ContractRequest{status: status}, required_status) when status == required_status, do: :ok
+  defp validate_status(_, _), do: {:error, {:"422", "Incorrect status of contract_request to modify it"}}
 end

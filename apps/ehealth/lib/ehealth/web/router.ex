@@ -199,6 +199,7 @@ defmodule EHealthWeb.Router do
     post("/declaration_requests/:id/actions/resend_otp", DeclarationRequestController, :resend_otp)
 
     post("/contract_requests", ContractRequestController, :create)
+    patch("/contract_requests/:id", ContractRequestController, :update)
 
     resources(
       "/medication_request_requests",

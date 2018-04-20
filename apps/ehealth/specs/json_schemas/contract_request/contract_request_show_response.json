@@ -168,6 +168,36 @@
         },
         "updated_by": {
             "type": "string"
+        },
+        "nhs_legal_entity_id": {
+            "type": [
+                "null",
+                "string"
+            ]
+        },
+        "issue_city": {
+            "type": [
+                "null",
+                "string"
+            ]
+        },
+        "nhs_signer_base": {
+            "type": [
+                "null",
+                "string"
+            ]
+        },
+        "nhs_contract_price": {
+            "type": [
+                "null",
+                "number"
+            ]
+        },
+        "nhs_payment_method": {
+            "type": [
+                "null",
+                "string"
+            ]
         }
     },
     "required": [
