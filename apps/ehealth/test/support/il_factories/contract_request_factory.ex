@@ -9,7 +9,7 @@ defmodule EHealth.ILFactories.ContractRequestFactory do
       def contract_request_factory do
         legal_entity = insert(:prm, :legal_entity)
         employee = insert(:prm, :employee)
-        division = insert(:prm, :division)
+        division = insert(:prm, :division, legal_entity: legal_entity)
         today = Date.utc_today()
         end_date = Date.add(today, 50)
 
@@ -44,7 +44,11 @@ defmodule EHealth.ILFactories.ContractRequestFactory do
           start_date: today,
           end_date: end_date,
           inserted_by: UUID.generate(),
-          updated_by: UUID.generate()
+          updated_by: UUID.generate(),
+          issue_city: "Київ",
+          nhs_signer_base: "на підставі наказу",
+          nhs_contract_price: 50_000.00,
+          nhs_payment_method: "prepayment"
         }
       end
     end

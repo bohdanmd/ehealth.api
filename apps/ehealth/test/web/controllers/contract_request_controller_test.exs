@@ -3,6 +3,8 @@ defmodule EHealth.Web.ContractRequestControllerTest do
 
   use EHealth.Web.ConnCase
   alias EHealth.ContractRequests.ContractRequest
+  alias EHealth.Employees.Employee
+  alias EHealth.LegalEntities.LegalEntity
   alias Ecto.UUID
   import Mox
   import EHealth.MockServer, only: [get_client_admin: 0]
@@ -309,6 +311,391 @@ defmodule EHealth.Web.ContractRequestControllerTest do
              |> put_client_id_header(get_client_admin())
              |> get(contract_request_path(conn, :show, UUID.generate()))
              |> json_response(404)
+    end
+  end
+
+  describe "approve contract_request" do
+    test "user is not NHS ADMIN SIGNER", %{conn: conn} do
+      contract_request = insert(:il, :contract_request)
+
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "OWNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert json_response(conn, 403)
+    end
+
+    test "no contract_request found", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, UUID.generate()))
+      assert json_response(conn, 404)
+    end
+
+    test "contract_request has wrong status", %{conn: conn} do
+      contract_request = insert(:il, :contract_request, status: ContractRequest.status(:signed))
+
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 422)
+
+      assert %{
+               "invalid" => [
+                 %{"entry_type" => "request", "rules" => [%{"rule" => "json"}]}
+               ],
+               "message" => "Incorrect status of contract_request to modify it",
+               "type" => "request_malformed"
+             } = resp["error"]
+    end
+
+    test "contractor_legal_entity not found", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      contract_request = insert(:il, :contract_request, contractor_legal_entity_id: UUID.generate())
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 422)
+
+      assert %{
+               "invalid" => [
+                 %{
+                   "entry" => "$.contractor_legal_entity_id",
+                   "entry_type" => "json_data_property",
+                   "rules" => [
+                     %{
+                       "description" => "Legal entity not found",
+                       "params" => [],
+                       "rule" => "invalid"
+                     }
+                   ]
+                 }
+               ]
+             } = resp["error"]
+    end
+
+    test "contractor_legal_entity is not active", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity, status: LegalEntity.status(:closed))
+      contract_request = insert(:il, :contract_request, contractor_legal_entity_id: legal_entity.id)
+      legal_entity = insert(:prm, :legal_entity)
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 422)
+
+      assert %{
+               "invalid" => [
+                 %{
+                   "entry" => "$.contractor_legal_entity_id",
+                   "entry_type" => "json_data_property",
+                   "rules" => [
+                     %{
+                       "description" => "Legal entity in contract request should be active",
+                       "params" => [],
+                       "rule" => "invalid"
+                     }
+                   ]
+                 }
+               ]
+             } = resp["error"]
+    end
+
+    test "contractor_owner_id not found", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+
+      contract_request =
+        insert(
+          :il,
+          :contract_request,
+          contractor_legal_entity_id: legal_entity.id,
+          contractor_owner_id: UUID.generate()
+        )
+
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 422)
+
+      assert %{
+               "invalid" => [
+                 %{
+                   "entry" => "$.employee_id",
+                   "entry_type" => "json_data_property",
+                   "rules" => [
+                     %{
+                       "description" => "Employee not found",
+                       "params" => [],
+                       "rule" => "invalid"
+                     }
+                   ]
+                 }
+               ]
+             } = resp["error"]
+    end
+
+    test "contractor_owner_id has invalid status", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      employee = insert(:prm, :employee, status: Employee.status(:new))
+
+      contract_request =
+        insert(
+          :il,
+          :contract_request,
+          contractor_legal_entity_id: legal_entity.id,
+          contractor_owner_id: employee.id
+        )
+
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 422)
+
+      assert %{
+               "invalid" => [
+                 %{
+                   "entry" => "$.contractor_owner_id",
+                   "entry_type" => "json_data_property",
+                   "rules" => [
+                     %{
+                       "description" =>
+                         "Contractor owner must be active within current legal entity in contract request",
+                       "params" => [],
+                       "rule" => "invalid"
+                     }
+                   ]
+                 }
+               ]
+             } = resp["error"]
+    end
+
+    test "employee legal_entity_id doesn't match contractor_legal_entity_id", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      employee = insert(:prm, :employee)
+
+      contract_request =
+        insert(
+          :il,
+          :contract_request,
+          contractor_legal_entity_id: legal_entity.id,
+          contractor_owner_id: employee.id
+        )
+
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 422)
+
+      assert %{
+               "invalid" => [
+                 %{
+                   "entry" => "$.contractor_owner_id",
+                   "entry_type" => "json_data_property",
+                   "rules" => [
+                     %{
+                       "description" =>
+                         "Contractor owner must be active within current legal entity in contract request",
+                       "params" => [],
+                       "rule" => "invalid"
+                     }
+                   ]
+                 }
+               ]
+             } = resp["error"]
+    end
+
+    test "employee is not owner", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      employee = insert(:prm, :employee, legal_entity_id: legal_entity.id)
+
+      contract_request =
+        insert(
+          :il,
+          :contract_request,
+          contractor_legal_entity_id: legal_entity.id,
+          contractor_owner_id: employee.id
+        )
+
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 422)
+
+      assert %{
+               "invalid" => [
+                 %{
+                   "entry" => "$.contractor_owner_id",
+                   "entry_type" => "json_data_property",
+                   "rules" => [
+                     %{
+                       "description" =>
+                         "Contractor owner must be active within current legal entity in contract request",
+                       "params" => [],
+                       "rule" => "invalid"
+                     }
+                   ]
+                 }
+               ]
+             } = resp["error"]
+    end
+
+    test "external contractor division is not present in employee divisions", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      employee = insert(:prm, :employee, legal_entity_id: legal_entity.id, employee_type: Employee.type(:owner))
+
+      contract_request =
+        insert(
+          :il,
+          :contract_request,
+          contractor_legal_entity_id: legal_entity.id,
+          contractor_owner_id: employee.id,
+          contractor_employee_divisions: [
+            %{division_id: UUID.generate(), employee_id: employee.id}
+          ]
+        )
+
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 422)
+
+      assert %{
+               "invalid" => [
+                 %{
+                   "entry" => "$.contractor_employee_divisions.employee_id",
+                   "entry_type" => "json_data_property",
+                   "rules" => [
+                     %{
+                       "description" => "Employee must be active DOCTOR with linked division",
+                       "params" => [],
+                       "rule" => "invalid"
+                     }
+                   ]
+                 }
+               ]
+             } = resp["error"]
+    end
+
+    test "invalid start date", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      employee_owner = insert(:prm, :employee, legal_entity_id: legal_entity.id, employee_type: Employee.type(:owner))
+      division = insert(:prm, :division, legal_entity: legal_entity)
+      employee_doctor = insert(:prm, :employee, legal_entity_id: legal_entity.id, division: division)
+      now = Date.utc_today()
+      start_date = Date.add(now, 3650)
+
+      contract_request =
+        insert(
+          :il,
+          :contract_request,
+          contractor_legal_entity_id: legal_entity.id,
+          contractor_owner_id: employee_owner.id,
+          start_date: start_date,
+          contractor_employee_divisions: [
+            %{
+              "employee_id" => employee_doctor.id,
+              "staff_units" => 0.5,
+              "declaration_limit" => 2000,
+              "division_id" => division.id
+            }
+          ]
+        )
+
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 422)
+
+      assert %{
+               "invalid" => [
+                 %{
+                   "entry" => "$.start_date",
+                   "entry_type" => "json_data_property",
+                   "rules" => [
+                     %{
+                       "description" => "Start date must be within this or next year",
+                       "params" => [],
+                       "rule" => "invalid"
+                     }
+                   ]
+                 }
+               ]
+             } = resp["error"]
+    end
+
+    test "success approve contract request", %{conn: conn} do
+      expect(MithrilMock, :get_user_roles, fn _, _, _ ->
+        {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
+      end)
+
+      legal_entity = insert(:prm, :legal_entity)
+      employee_owner = insert(:prm, :employee, legal_entity_id: legal_entity.id, employee_type: Employee.type(:owner))
+      division = insert(:prm, :division, legal_entity: legal_entity)
+      employee_doctor = insert(:prm, :employee, legal_entity_id: legal_entity.id, division: division)
+      now = Date.utc_today()
+      start_date = Date.add(now, 10)
+
+      contract_request =
+        insert(
+          :il,
+          :contract_request,
+          contractor_legal_entity_id: legal_entity.id,
+          contractor_owner_id: employee_owner.id,
+          contractor_employee_divisions: [
+            %{
+              "employee_id" => employee_doctor.id,
+              "staff_units" => 0.5,
+              "declaration_limit" => 2000,
+              "division_id" => division.id
+            }
+          ],
+          start_date: start_date
+        )
+
+      conn = put_client_id_header(conn, legal_entity.id)
+      conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
+      assert resp = json_response(conn, 200)
+
+      schema =
+        "specs/json_schemas/contract_request/contract_request_show_response.json"
+        |> File.read!()
+        |> Poison.decode!()
+
+      assert :ok = NExJsonSchema.Validator.validate(schema, resp["data"])
     end
   end
 
