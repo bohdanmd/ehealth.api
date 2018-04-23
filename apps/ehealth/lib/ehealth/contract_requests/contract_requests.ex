@@ -1,7 +1,7 @@
 defmodule EHealth.ContractRequests do
   @moduledoc false
 
-  import EHealth.Utils.Connection, only: [get_consumer_id: 1]
+  import EHealth.Utils.Connection, only: [get_consumer_id: 1, get_client_id: 1]
   alias EHealth.ContractRequests.ContractRequest
   alias EHealth.Divisions.Division
   alias EHealth.Employees.Employee
@@ -350,4 +350,33 @@ defmodule EHealth.ContractRequests do
 
   defp validate_status(%ContractRequest{status: status}, required_status) when status == required_status, do: :ok
   defp validate_status(_, _), do: {:error, {:"422", "Incorrect status of contract_request to modify it"}}
+
+  def get_by_id(headers, client_type, id) do
+    client_id = get_client_id(headers)
+
+    with {:ok, %ContractRequest{} = contract_request} <- get_contract_request(client_id, client_type, id) do
+      {:ok, contract_request}
+    end
+  end
+
+  defp get_contract_request(_, "NHS ADMIN", id) do
+    with %ContractRequest{} = contract_request <- Repo.get(ContractRequest, id) do
+      {:ok, contract_request}
+    end
+  end
+
+  defp get_contract_request(client_id, "MSP", id) do
+    with %ContractRequest{} = contract_request <- Repo.get(ContractRequest, id),
+         :ok <- validate_legal_entity_id(contract_request, client_id) do
+      {:ok, contract_request}
+    end
+  end
+
+  defp validate_legal_entity_id(%ContractRequest{contractor_legal_entity_id: id}, legal_entity_id) do
+    if id == legal_entity_id do
+      :ok
+    else
+      {:error, {:forbidden, "You are not allowed to view this contract request"}}
+    end
+  end
 end

@@ -5,6 +5,7 @@ defmodule EHealth.Web.ContractRequestControllerTest do
   alias EHealth.ContractRequests.ContractRequest
   alias Ecto.UUID
   import Mox
+  import EHealth.MockServer, only: [get_client_admin: 0]
 
   describe "create contract request" do
     test "user is not owner", %{conn: conn} do
@@ -250,6 +251,64 @@ defmodule EHealth.Web.ContractRequestControllerTest do
         |> Poison.decode!()
 
       assert :ok = NExJsonSchema.Validator.validate(schema, resp["data"])
+    end
+  end
+
+  describe "show contract_request details" do
+    setup %{conn: conn} do
+      %{id: legal_entity_id_1} = insert(:prm, :legal_entity, type: "MSP")
+      %{id: contract_request_id_1} = insert(:il, :contract_request, contractor_legal_entity_id: legal_entity_id_1)
+
+      %{id: legal_entity_id_2} = insert(:prm, :legal_entity, type: "MSP")
+      %{id: contract_request_id_2} = insert(:il, :contract_request, contractor_legal_entity_id: legal_entity_id_2)
+
+      {:ok,
+       %{
+         conn: conn,
+         legal_entity_id_1: legal_entity_id_1,
+         contract_request_id_1: contract_request_id_1,
+         contract_request_id_2: contract_request_id_2
+       }}
+    end
+
+    test "success showing data for correct MPS client", %{conn: conn} = context do
+      assert conn
+             |> put_client_id_header(context.legal_entity_id_1)
+             |> get(contract_request_path(conn, :show, context.contract_request_id_1))
+             |> json_response(200)
+    end
+
+    test "denied showing data for uncorrect MPS client", %{conn: conn} = context do
+      assert conn
+             |> put_client_id_header(context.legal_entity_id_1)
+             |> get(contract_request_path(conn, :show, context.contract_request_id_2))
+             |> json_response(403)
+    end
+
+    test "contract_request not found", %{conn: conn} = context do
+      assert conn
+             |> put_client_id_header(context.legal_entity_id_1)
+             |> get(contract_request_path(conn, :show, UUID.generate()))
+             |> json_response(404)
+    end
+
+    test "success showing any contract_request for NHS ADMIN client", %{conn: conn} = context do
+      assert conn
+             |> put_client_id_header(get_client_admin())
+             |> get(contract_request_path(conn, :show, context.contract_request_id_1))
+             |> json_response(200)
+
+      assert conn
+             |> put_client_id_header(get_client_admin())
+             |> get(contract_request_path(conn, :show, context.contract_request_id_2))
+             |> json_response(200)
+    end
+
+    test "contract_request not found for NHS ADMIN client", %{conn: conn} do
+      assert conn
+             |> put_client_id_header(get_client_admin())
+             |> get(contract_request_path(conn, :show, UUID.generate()))
+             |> json_response(404)
     end
   end
 
