@@ -2,14 +2,18 @@ defmodule EHealth.ContractRequests do
   @moduledoc false
 
   import EHealth.Utils.Connection, only: [get_consumer_id: 1, get_client_id: 1]
+  alias Ecto.Adapters.SQL
   alias EHealth.ContractRequests.ContractRequest
   alias EHealth.Divisions.Division
   alias EHealth.Employees.Employee
+  alias EHealth.LegalEntities.LegalEntity
   alias EHealth.Validators.Reference
   alias EHealth.Validators.JsonSchema
   alias EHealth.Repo
+  alias EHealth.Utils.NumberGenerator
   import Ecto.Changeset
   import Ecto.Query
+  require Logger
 
   @mithril_api Application.get_env(:ehealth, :api_resolvers)[:mithril]
 
@@ -37,8 +41,8 @@ defmodule EHealth.ContractRequests do
   def create(headers, params) do
     user_id = get_consumer_id(headers)
 
-    with :ok <- JsonSchema.validate(:contract_request, params),
-         {:ok, %{"data" => data}} <- @mithril_api.get_user_roles(user_id, %{}, headers),
+    with {:ok, %{"data" => data}} <- @mithril_api.get_user_roles(user_id, %{}, headers),
+         :ok <- JsonSchema.validate(:contract_request, params),
          :ok <- user_has_role(data, "OWNER"),
          :ok <- validate_employee_divisions(params),
          :ok <- validate_external_contractors(params),
@@ -72,6 +76,38 @@ defmodule EHealth.ContractRequests do
     end
   end
 
+  def approve(headers, params) do
+    user_id = get_consumer_id(headers)
+
+    with {:ok, %{"data" => data}} <- @mithril_api.get_user_roles(user_id, %{}, headers),
+         :ok <- user_has_role(data, "NHS ADMIN SIGNER"),
+         %ContractRequest{} = contract_request <- Repo.get(ContractRequest, params["id"]),
+         :ok <- validate_status(contract_request, ContractRequest.status(:new)),
+         :ok <- validate_contractor_legal_entity(contract_request),
+         :ok <- validate_contractor_owner_id(contract_request),
+         :ok <- validate_employee_divisions(contract_request),
+         :ok <- validate_start_date(contract_request),
+         update_params <-
+           params
+           |> Map.delete("id")
+           |> Map.put("updated_by", user_id)
+           |> Map.put("contract_number", get_contract_number(params))
+           |> Map.put("status", ContractRequest.status(:approved)),
+         %Ecto.Changeset{valid?: true} = changes <- approve_changeset(contract_request, update_params) do
+      Repo.update(changes)
+    end
+  end
+
+  defp get_contract_number(%{"contract_number" => contract_number}) when not is_nil(contract_number) do
+    contract_number
+  end
+
+  defp get_contract_number(_) do
+    with {:ok, sequence} <- get_contract_request_sequence() do
+      NumberGenerator.generate_from_sequence(1, sequence)
+    end
+  end
+
   def changeset(%ContractRequest{} = contract_request, params) do
     contract_request
     |> cast(params, @fields_required ++ @fields_optional)
@@ -82,6 +118,14 @@ defmodule EHealth.ContractRequests do
     contract_request
     |> cast(params, ~w(nhs_signer_base nhs_contract_price nhs_payment_method)a)
     |> validate_number(:nhs_contract_price, greater_than: 0)
+  end
+
+  def approve_changeset(%ContractRequest{} = contract_request, params) do
+    fields = ~w(nhs_signer_base nhs_contract_price nhs_payment_method issue_city status)a
+
+    contract_request
+    |> cast(params, fields)
+    |> validate_required(fields)
   end
 
   defp terminate_pending_contracts(params) do
@@ -105,6 +149,13 @@ defmodule EHealth.ContractRequests do
       nil -> {:error, :forbidden}
       _ -> :ok
     end
+  end
+
+  defp validate_employee_divisions(%ContractRequest{} = contract_request) do
+    contract_request
+    |> Poison.encode!()
+    |> Poison.decode!()
+    |> validate_employee_divisions()
   end
 
   defp validate_employee_divisions(params) do
@@ -311,6 +362,13 @@ defmodule EHealth.ContractRequests do
     end
   end
 
+  defp validate_start_date(%ContractRequest{} = contract_request) do
+    contract_request
+    |> Poison.encode!()
+    |> Poison.decode!()
+    |> validate_start_date()
+  end
+
   defp validate_start_date(%{"start_date" => start_date}) do
     now = Date.utc_today()
     start_date = Date.from_iso8601!(start_date)
@@ -377,6 +435,68 @@ defmodule EHealth.ContractRequests do
       :ok
     else
       {:error, {:forbidden, "You are not allowed to view this contract request"}}
+    end
+  end
+
+  defp validate_contractor_legal_entity(%ContractRequest{contractor_legal_entity_id: legal_entity_id}) do
+    with {:ok, legal_entity} <- Reference.validate(:legal_entity, legal_entity_id, "$.contractor_legal_entity_id"),
+         true <- legal_entity.status == LegalEntity.status(:active) do
+      :ok
+    else
+      false ->
+        {:error,
+         [
+           {
+             %{
+               description: "Legal entity in contract request should be active",
+               params: [],
+               rule: :invalid
+             },
+             "$.contractor_legal_entity_id"
+           }
+         ]}
+
+      error ->
+        error
+    end
+  end
+
+  defp validate_contractor_owner_id(%ContractRequest{
+         contractor_owner_id: contractor_owner_id,
+         contractor_legal_entity_id: contractor_legal_entity_id
+       }) do
+    with {:ok, employee} <- Reference.validate(:employee, contractor_owner_id),
+         true <- employee.status == Employee.status(:approved),
+         true <- employee.legal_entity_id == contractor_legal_entity_id,
+         true <- employee.employee_type == Employee.type(:owner) do
+      :ok
+    else
+      false ->
+        {:error,
+         [
+           {
+             %{
+               description: "Contractor owner must be active within current legal entity in contract request",
+               params: [],
+               rule: :invalid
+             },
+             "$.contractor_owner_id"
+           }
+         ]}
+
+      error ->
+        error
+    end
+  end
+
+  defp get_contract_request_sequence do
+    case SQL.query(Repo, "SELECT nextval('contract_request');", []) do
+      {:ok, %Postgrex.Result{rows: [[sequence]]}} ->
+        {:ok, sequence}
+
+      _ ->
+        Logger.error("Can't get contract_request sequence")
+        {:error, %{"type" => "internal_error"}}
     end
   end
 end

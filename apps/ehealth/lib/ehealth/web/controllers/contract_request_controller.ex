@@ -26,4 +26,10 @@ defmodule EHealth.Web.ContractRequestController do
       render(conn, "show.json", contract_request: contract_request)
     end
   end
+
+  def approve(conn, params) do
+    with {:ok, %ContractRequest{} = contract_request} <- ContractRequests.approve(conn.req_headers, params) do
+      render(conn, "show.json", contract_request: contract_request)
+    end
+  end
 end

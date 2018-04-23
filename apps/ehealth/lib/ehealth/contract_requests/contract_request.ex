@@ -4,6 +4,8 @@ defmodule EHealth.ContractRequests.ContractRequest do
   use Ecto.Schema
   alias Ecto.UUID
 
+  @derive {Poison.Encoder, except: [:__meta__]}
+
   @primary_key {:id, :binary_id, autogenerate: true}
 
   @status_new "NEW"
