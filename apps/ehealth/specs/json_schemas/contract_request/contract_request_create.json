@@ -186,10 +186,14 @@
         },
         "id_form": {
             "type": "string",
-            "description": "type of contract {DICTIONARY CONTRACT_TYPE}"
+            "description": "Dictionary: CONTRACT_TYPE"
         },
         "contract_number": {
-            "type": "string"
+            "type": [
+                "string",
+                "null"
+            ],
+            "pattern": "^\\d{4}-[\\dAEHKMPTX]{4}-[\\dAEHKMPTX]{4}$"
         }
     },
     "required": [

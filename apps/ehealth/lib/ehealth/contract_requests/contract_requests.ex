@@ -5,8 +5,11 @@ defmodule EHealth.ContractRequests do
   alias Ecto.Adapters.SQL
   alias EHealth.ContractRequests.ContractRequest
   alias EHealth.Divisions.Division
+  alias EHealth.Employees
   alias EHealth.Employees.Employee
   alias EHealth.LegalEntities.LegalEntity
+  alias EHealth.Parties
+  alias EHealth.Parties.Party
   alias EHealth.Validators.Reference
   alias EHealth.Validators.JsonSchema
   alias EHealth.Repo
@@ -49,6 +52,7 @@ defmodule EHealth.ContractRequests do
          :ok <- validate_external_contractor_flag(params),
          :ok <- validate_start_date(params),
          :ok <- validate_end_date(params),
+         :ok <- validate_contractor_owner_id(user_id, params),
          _ <- terminate_pending_contracts(params),
          insert_params <-
            params
@@ -63,7 +67,12 @@ defmodule EHealth.ContractRequests do
   def update(headers, params) do
     user_id = get_consumer_id(headers)
 
-    with {:ok, %{"data" => data}} <- @mithril_api.get_user_roles(user_id, %{}, headers),
+    with :ok <-
+           JsonSchema.validate(
+             :contract_request_update,
+             Map.take(params, ~w(nhs_signer_base nhs_contract_price nhs_payment_method issue_city))
+           ),
+         {:ok, %{"data" => data}} <- @mithril_api.get_user_roles(user_id, %{}, headers),
          :ok <- user_has_role(data, "NHS ADMIN SIGNER"),
          %ContractRequest{} = contract_request <- Repo.get(ContractRequest, params["id"]),
          :ok <- validate_status(contract_request, ContractRequest.status(:new)),
@@ -84,7 +93,7 @@ defmodule EHealth.ContractRequests do
          %ContractRequest{} = contract_request <- Repo.get(ContractRequest, params["id"]),
          :ok <- validate_status(contract_request, ContractRequest.status(:new)),
          :ok <- validate_contractor_legal_entity(contract_request),
-         :ok <- validate_contractor_owner_id(contract_request),
+         :ok <- validate_contractor_owner_id(user_id, contract_request),
          :ok <- validate_employee_divisions(contract_request),
          :ok <- validate_start_date(contract_request),
          update_params <-
@@ -362,6 +371,46 @@ defmodule EHealth.ContractRequests do
     end
   end
 
+  defp validate_contractor_owner_id(user_id, %ContractRequest{
+         contractor_owner_id: contractor_owner_id,
+         contractor_legal_entity_id: contractor_legal_entity_id
+       }) do
+    validate_contractor_owner_id(user_id, %{
+      "contractor_owner_id" => contractor_owner_id,
+      "contractor_legal_entity_id" => contractor_legal_entity_id
+    })
+  end
+
+  defp validate_contractor_owner_id(user_id, %{
+         "contractor_owner_id" => contract_owner_id,
+         "contractor_legal_entity_id" => contractor_legal_entity_id
+       }) do
+    with %Party{id: id} <- Parties.get_by_user_id(user_id),
+         %{entries: [_employee]} <-
+           Employees.list(%{
+             "party_id" => id,
+             "legal_entity_id" => contractor_legal_entity_id,
+             "employee_type" => Employee.type(:owner),
+             "ids" => contract_owner_id,
+             "status" => Employee.status(:approved)
+           }) do
+      :ok
+    else
+      _ ->
+        {:error,
+         [
+           {
+             %{
+               description: "Contractor owner must be active within current legal entity in contract request",
+               params: [],
+               rule: :invalid
+             },
+             "$.contractor_owner_id"
+           }
+         ]}
+    end
+  end
+
   defp validate_start_date(%ContractRequest{} = contract_request) do
     contract_request
     |> Poison.encode!()
@@ -453,34 +502,6 @@ defmodule EHealth.ContractRequests do
                rule: :invalid
              },
              "$.contractor_legal_entity_id"
-           }
-         ]}
-
-      error ->
-        error
-    end
-  end
-
-  defp validate_contractor_owner_id(%ContractRequest{
-         contractor_owner_id: contractor_owner_id,
-         contractor_legal_entity_id: contractor_legal_entity_id
-       }) do
-    with {:ok, employee} <- Reference.validate(:employee, contractor_owner_id),
-         true <- employee.status == Employee.status(:approved),
-         true <- employee.legal_entity_id == contractor_legal_entity_id,
-         true <- employee.employee_type == Employee.type(:owner) do
-      :ok
-    else
-      false ->
-        {:error,
-         [
-           {
-             %{
-               description: "Contractor owner must be active within current legal entity in contract request",
-               params: [],
-               rule: :invalid
-             },
-             "$.contractor_owner_id"
            }
          ]}
 

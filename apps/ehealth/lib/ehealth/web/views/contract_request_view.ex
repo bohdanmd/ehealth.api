@@ -23,6 +23,7 @@ defmodule EHealth.Web.ContractRequestView do
       id_form
       issue_city
       status
+      contract_number
       inserted_at
       inserted_by
       updated_at

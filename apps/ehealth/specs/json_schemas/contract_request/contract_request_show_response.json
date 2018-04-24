@@ -198,6 +198,12 @@
                 "null",
                 "string"
             ]
+        },
+        "contract_number": {
+            "type": [
+                "string",
+                "null"
+            ]
         }
     },
     "required": [
@@ -215,7 +221,8 @@
         "inserted_at",
         "inserted_by",
         "updated_at",
-        "updated_by"
+        "updated_by",
+        "contract_number"
     ],
     "additionalProperties": false
 }

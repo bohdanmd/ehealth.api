@@ -5,6 +5,7 @@ defmodule EHealth.Web.ContractRequestControllerTest do
   alias EHealth.ContractRequests.ContractRequest
   alias EHealth.Employees.Employee
   alias EHealth.LegalEntities.LegalEntity
+  alias EHealth.Utils.NumberGenerator
   alias Ecto.UUID
   import Mox
   import EHealth.MockServer, only: [get_client_admin: 0]
@@ -137,7 +138,7 @@ defmodule EHealth.Web.ContractRequestControllerTest do
       assert_error(resp, "$.end_date", "The year of start_date and and date must be equal")
     end
 
-    test "success create contract request", %{conn: conn} do
+    test "invalid contractor_owner_id", %{conn: conn} do
       %{legal_entity: legal_entity, division: division, employee: employee} = prepare_data()
       conn = put_client_id_header(conn, legal_entity.id)
       now = Date.utc_today()
@@ -150,7 +151,98 @@ defmodule EHealth.Web.ContractRequestControllerTest do
         |> Map.put("end_date", Date.to_iso8601(Date.add(now, 30)))
 
       conn = post(conn, contract_request_path(conn, :create), params)
-      assert resp = json_response(conn, 200)
+      assert resp = json_response(conn, 422)
+
+      assert_error(
+        resp,
+        "$.contractor_owner_id",
+        "Contractor owner must be active within current legal entity in contract request"
+      )
+    end
+
+    test "invalid contract number", %{conn: conn} do
+      %{legal_entity: legal_entity, division: division, employee: employee, user_id: user_id, owner: owner} =
+        prepare_data()
+
+      conn =
+        conn
+        |> put_client_id_header(legal_entity.id)
+        |> put_consumer_id_header(user_id)
+
+      now = Date.utc_today()
+      start_date = Date.add(now, 10)
+
+      params =
+        legal_entity
+        |> prepare_params(division, employee, Date.to_iso8601(Date.add(start_date, 1)))
+        |> Map.put("contractor_owner_id", owner.id)
+        |> Map.put("contract_number", "invalid")
+        |> Map.put("start_date", Date.to_iso8601(start_date))
+        |> Map.put("end_date", Date.to_iso8601(Date.add(now, 30)))
+
+      conn = post(conn, contract_request_path(conn, :create), params)
+      assert resp = json_response(conn, 422)
+
+      assert_error(
+        resp,
+        "$.contract_number",
+        "string does not match pattern \"^\\\\d{4}-[\\\\dAEHKMPTX]{4}-[\\\\dAEHKMPTX]{4}$\"",
+        "format"
+      )
+    end
+
+    test "success create contract request with contract_number", %{conn: conn} do
+      %{legal_entity: legal_entity, division: division, employee: employee, user_id: user_id, owner: owner} =
+        prepare_data()
+
+      conn =
+        conn
+        |> put_client_id_header(legal_entity.id)
+        |> put_consumer_id_header(user_id)
+
+      now = Date.utc_today()
+      start_date = Date.add(now, 10)
+
+      params =
+        legal_entity
+        |> prepare_params(division, employee, Date.to_iso8601(Date.add(start_date, 1)))
+        |> Map.put("contractor_owner_id", owner.id)
+        |> Map.put("contract_number", NumberGenerator.generate_from_sequence(1, 1))
+        |> Map.put("start_date", Date.to_iso8601(start_date))
+        |> Map.put("end_date", Date.to_iso8601(Date.add(now, 30)))
+
+      conn1 = post(conn, contract_request_path(conn, :create), params)
+      assert resp = json_response(conn1, 200)
+
+      schema =
+        "specs/json_schemas/contract_request/contract_request_show_response.json"
+        |> File.read!()
+        |> Poison.decode!()
+
+      assert :ok = NExJsonSchema.Validator.validate(schema, resp["data"])
+    end
+
+    test "success create contract request without contract_number", %{conn: conn} do
+      %{legal_entity: legal_entity, division: division, employee: employee, user_id: user_id, owner: owner} =
+        prepare_data()
+
+      conn =
+        conn
+        |> put_client_id_header(legal_entity.id)
+        |> put_consumer_id_header(user_id)
+
+      now = Date.utc_today()
+      start_date = Date.add(now, 10)
+
+      params =
+        legal_entity
+        |> prepare_params(division, employee, Date.to_iso8601(Date.add(start_date, 1)))
+        |> Map.put("contractor_owner_id", owner.id)
+        |> Map.put("start_date", Date.to_iso8601(start_date))
+        |> Map.put("end_date", Date.to_iso8601(Date.add(now, 30)))
+
+      conn1 = post(conn, contract_request_path(conn, :create), params)
+      assert resp = json_response(conn1, 200)
 
       schema =
         "specs/json_schemas/contract_request/contract_request_show_response.json"
@@ -439,11 +531,12 @@ defmodule EHealth.Web.ContractRequestControllerTest do
       assert %{
                "invalid" => [
                  %{
-                   "entry" => "$.employee_id",
+                   "entry" => "$.contractor_owner_id",
                    "entry_type" => "json_data_property",
                    "rules" => [
                      %{
-                       "description" => "Employee not found",
+                       "description" =>
+                         "Contractor owner must be active within current legal entity in contract request",
                        "params" => [],
                        "rule" => "invalid"
                      }
@@ -572,8 +665,18 @@ defmodule EHealth.Web.ContractRequestControllerTest do
         {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
       end)
 
+      user_id = UUID.generate()
       legal_entity = insert(:prm, :legal_entity)
-      employee = insert(:prm, :employee, legal_entity_id: legal_entity.id, employee_type: Employee.type(:owner))
+      party_user = insert(:prm, :party_user, user_id: user_id)
+
+      employee =
+        insert(
+          :prm,
+          :employee,
+          legal_entity_id: legal_entity.id,
+          employee_type: Employee.type(:owner),
+          party: party_user.party
+        )
 
       contract_request =
         insert(
@@ -586,7 +689,11 @@ defmodule EHealth.Web.ContractRequestControllerTest do
           ]
         )
 
-      conn = put_client_id_header(conn, legal_entity.id)
+      conn =
+        conn
+        |> put_client_id_header(legal_entity.id)
+        |> put_consumer_id_header(user_id)
+
       conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
       assert resp = json_response(conn, 422)
 
@@ -612,8 +719,19 @@ defmodule EHealth.Web.ContractRequestControllerTest do
         {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
       end)
 
+      user_id = UUID.generate()
       legal_entity = insert(:prm, :legal_entity)
-      employee_owner = insert(:prm, :employee, legal_entity_id: legal_entity.id, employee_type: Employee.type(:owner))
+      party_user = insert(:prm, :party_user, user_id: user_id)
+
+      employee_owner =
+        insert(
+          :prm,
+          :employee,
+          legal_entity_id: legal_entity.id,
+          employee_type: Employee.type(:owner),
+          party: party_user.party
+        )
+
       division = insert(:prm, :division, legal_entity: legal_entity)
       employee_doctor = insert(:prm, :employee, legal_entity_id: legal_entity.id, division: division)
       now = Date.utc_today()
@@ -636,7 +754,11 @@ defmodule EHealth.Web.ContractRequestControllerTest do
           ]
         )
 
-      conn = put_client_id_header(conn, legal_entity.id)
+      conn =
+        conn
+        |> put_client_id_header(legal_entity.id)
+        |> put_consumer_id_header(user_id)
+
       conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
       assert resp = json_response(conn, 422)
 
@@ -662,8 +784,19 @@ defmodule EHealth.Web.ContractRequestControllerTest do
         {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
       end)
 
+      user_id = UUID.generate()
+      party_user = insert(:prm, :party_user, user_id: user_id)
       legal_entity = insert(:prm, :legal_entity)
-      employee_owner = insert(:prm, :employee, legal_entity_id: legal_entity.id, employee_type: Employee.type(:owner))
+
+      employee_owner =
+        insert(
+          :prm,
+          :employee,
+          legal_entity_id: legal_entity.id,
+          employee_type: Employee.type(:owner),
+          party: party_user.party
+        )
+
       division = insert(:prm, :division, legal_entity: legal_entity)
       employee_doctor = insert(:prm, :employee, legal_entity_id: legal_entity.id, division: division)
       now = Date.utc_today()
@@ -686,7 +819,11 @@ defmodule EHealth.Web.ContractRequestControllerTest do
           start_date: start_date
         )
 
-      conn = put_client_id_header(conn, legal_entity.id)
+      conn =
+        conn
+        |> put_client_id_header(legal_entity.id)
+        |> put_consumer_id_header(user_id)
+
       conn = patch(conn, contract_request_path(conn, :approve, contract_request.id))
       assert resp = json_response(conn, 200)
 
@@ -704,10 +841,29 @@ defmodule EHealth.Web.ContractRequestControllerTest do
       {:ok, %{"data" => [%{"role_name" => role_name}]}}
     end)
 
+    user_id = UUID.generate()
+    party_user = insert(:prm, :party_user, user_id: user_id)
     legal_entity = insert(:prm, :legal_entity)
     division = insert(:prm, :division, legal_entity: legal_entity)
-    employee = insert(:prm, :employee, division: division)
-    %{legal_entity: legal_entity, employee: employee, division: division}
+
+    employee =
+      insert(
+        :prm,
+        :employee,
+        division: division,
+        legal_entity_id: legal_entity.id
+      )
+
+    owner =
+      insert(
+        :prm,
+        :employee,
+        employee_type: Employee.type(:owner),
+        party: party_user.party,
+        legal_entity_id: legal_entity.id
+      )
+
+    %{legal_entity: legal_entity, employee: employee, division: division, user_id: user_id, owner: owner}
   end
 
   defp prepare_params(legal_entity, division, employee, expires_at \\ nil) do
@@ -742,15 +898,14 @@ defmodule EHealth.Web.ContractRequestControllerTest do
     }
   end
 
-  defp assert_error(resp, entry, description) do
+  defp assert_error(resp, entry, description, rule \\ "invalid") do
     assert %{
              "type" => "validation_failed",
              "invalid" => [
                %{
                  "rules" => [
                    %{
-                     "rule" => "invalid",
-                     "params" => [],
+                     "rule" => ^rule,
                      "description" => ^description
                    }
                  ],
