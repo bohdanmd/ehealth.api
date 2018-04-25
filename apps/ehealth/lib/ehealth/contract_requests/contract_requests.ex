@@ -1,9 +1,15 @@
 defmodule EHealth.ContractRequests do
   @moduledoc false
 
+  use EHealth.Search, EHealth.Repo
+
+  import Ecto.Changeset
+  import Ecto.Query
   import EHealth.Utils.Connection, only: [get_consumer_id: 1, get_client_id: 1]
+
   alias Ecto.Adapters.SQL
   alias EHealth.ContractRequests.ContractRequest
+  alias EHealth.ContractRequests.Search
   alias EHealth.Divisions.Division
   alias EHealth.Employees
   alias EHealth.Employees.Employee
@@ -14,8 +20,7 @@ defmodule EHealth.ContractRequests do
   alias EHealth.Validators.JsonSchema
   alias EHealth.Repo
   alias EHealth.Utils.NumberGenerator
-  import Ecto.Changeset
-  import Ecto.Query
+
   require Logger
 
   @mithril_api Application.get_env(:ehealth, :api_resolvers)[:mithril]
@@ -40,6 +45,13 @@ defmodule EHealth.ContractRequests do
     external_contractors
     contract_number
   )a
+
+  def search(search_params) do
+    with %Ecto.Changeset{valid?: true} = changeset <- Search.changeset(search_params),
+         %Scrivener.Page{} = paging <- search(changeset, search_params, ContractRequest) do
+      {:ok, paging}
+    end
+  end
 
   def create(headers, params) do
     user_id = get_consumer_id(headers)

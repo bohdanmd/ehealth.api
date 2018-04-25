@@ -2,10 +2,17 @@ defmodule EHealth.Web.ContractRequestController do
   @moduledoc false
 
   use EHealth.Web, :controller
+
   alias EHealth.ContractRequests
   alias EHealth.ContractRequests.ContractRequest
 
   action_fallback(EHealth.Web.FallbackController)
+
+  def index(conn, params) do
+    with {:ok, paging} <- ContractRequests.search(params) do
+      render(conn, "index.json", contract_requests: paging.entries, paging: paging)
+    end
+  end
 
   def create(conn, params) do
     with {:ok, %ContractRequest{} = contract_request} <- ContractRequests.create(conn.req_headers, params) do

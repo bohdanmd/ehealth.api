@@ -42,6 +42,10 @@ defmodule EHealthWeb.Router do
     plug(:put_is_active_into_params)
   end
 
+  pipeline :contract_context do
+    plug(:process_client_context_for_list, legal_entity_param_name: "contractor_legal_entity_id")
+  end
+
   pipeline :cabinet do
     plug(:process_client_context_for_list, required_types: ["CABINET"])
   end
@@ -203,7 +207,9 @@ defmodule EHealthWeb.Router do
     patch("/contract_requests/:id/actions/approve", ContractRequestController, :approve)
 
     scope "/contract_requests" do
-      pipe_through([:client_context_list])
+      pipe_through([:contract_context])
+
+      get("/", ContractRequestController, :index)
       get("/:id", ContractRequestController, :show)
     end
 

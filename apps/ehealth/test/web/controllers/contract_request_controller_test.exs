@@ -2,13 +2,18 @@ defmodule EHealth.Web.ContractRequestControllerTest do
   @moduledoc false
 
   use EHealth.Web.ConnCase
+
+  import Mox
+  import EHealth.MockServer, only: [get_client_admin: 0]
+
   alias EHealth.ContractRequests.ContractRequest
   alias EHealth.Employees.Employee
   alias EHealth.LegalEntities.LegalEntity
   alias EHealth.Utils.NumberGenerator
   alias Ecto.UUID
-  import Mox
-  import EHealth.MockServer, only: [get_client_admin: 0]
+
+  @contract_request_status_new ContractRequest.status(:new)
+  @contract_request_status_declined ContractRequest.status(:declined)
 
   describe "create contract request" do
     test "user is not owner", %{conn: conn} do
@@ -834,6 +839,122 @@ defmodule EHealth.Web.ContractRequestControllerTest do
 
       assert :ok = NExJsonSchema.Validator.validate(schema, resp["data"])
     end
+  end
+
+  describe "search contract request" do
+    setup do
+      nhs_signer_id = UUID.generate()
+      contract_number = UUID.generate()
+      contractor_owner_id = UUID.generate()
+      legal_entity_id_1 = UUID.generate()
+      legal_entity_id_2 = get_client_admin()
+
+      insert(:prm, :legal_entity, type: "MSP", id: legal_entity_id_1)
+      insert(:prm, :legal_entity, type: "NHS ADMIN", id: legal_entity_id_2)
+      insert(:il, :contract_request, %{issue_city: "Львів"})
+
+      insert(:il, :contract_request, %{
+        issue_city: "Київ",
+        contractor_legal_entity_id: legal_entity_id_1,
+        contract_number: contract_number
+      })
+
+      insert(:il, :contract_request, %{
+        issue_city: "Київ",
+        contractor_legal_entity_id: legal_entity_id_1,
+        nhs_signer_id: nhs_signer_id
+      })
+
+      insert(:il, :contract_request, %{
+        issue_city: "Львів",
+        contractor_legal_entity_id: legal_entity_id_1,
+        status: ContractRequest.status(:declined)
+      })
+
+      insert(:il, :contract_request, %{
+        issue_city: "Київ",
+        contractor_legal_entity_id: legal_entity_id_2,
+        contractor_owner_id: contractor_owner_id
+      })
+
+      insert(:il, :contract_request, %{
+        issue_city: "Львів",
+        nhs_signer_id: nhs_signer_id,
+        status: ContractRequest.status(:signed)
+      })
+
+      {:ok,
+       %{
+         nhs_signer_id: nhs_signer_id,
+         contract_number: contract_number,
+         contractor_owner_id: contractor_owner_id,
+         legal_entity_id_1: legal_entity_id_1,
+         legal_entity_id_2: legal_entity_id_2
+       }}
+    end
+
+    test "finds by status from different client types", %{
+      conn: conn,
+      legal_entity_id_1: legal_entity_id_1,
+      legal_entity_id_2: legal_entity_id_2
+    } do
+      %{"data" => response_data} = do_get_contract_request(conn, legal_entity_id_1, %{"status" => "New"})
+      assert [%{"status" => @contract_request_status_new}, _] = response_data
+
+      %{"data" => response_data} = do_get_contract_request(conn, legal_entity_id_2, %{"status" => "new"})
+      assert 4 === length(response_data)
+
+      %{"data" => response_data} =
+        do_get_contract_request(conn, legal_entity_id_1, %{"issue_city" => "ЛЬВІВ", "status" => "declined"})
+
+      assert [%{"status" => @contract_request_status_declined}] = response_data
+    end
+
+    test "finds by issue city", %{conn: conn, legal_entity_id_1: legal_entity_id_1} do
+      %{"data" => response_data} = do_get_contract_request(conn, legal_entity_id_1, %{"issue_city" => "КИЇВ"})
+      assert 2 === length(response_data)
+    end
+
+    test "finds by attributtes", %{
+      conn: conn,
+      contractor_owner_id: contractor_owner_id,
+      nhs_signer_id: nhs_signer_id,
+      contract_number: contract_number,
+      legal_entity_id_1: legal_entity_id_1,
+      legal_entity_id_2: legal_entity_id_2
+    } do
+      %{"data" => response_data} =
+        do_get_contract_request(conn, legal_entity_id_2, %{"contractor_owner_id" => contractor_owner_id})
+
+      assert [%{"contractor_owner_id" => ^contractor_owner_id}] = response_data
+
+      %{"data" => response_data} = do_get_contract_request(conn, legal_entity_id_2, %{"nhs_signer_id" => nhs_signer_id})
+
+      assert [%{"nhs_signer_id" => ^nhs_signer_id}, _] = response_data
+
+      %{"data" => response_data} =
+        do_get_contract_request(conn, legal_entity_id_1, %{"contract_number" => contract_number})
+
+      assert [%{"contract_number" => ^contract_number}] = response_data
+
+      %{"data" => response_data} =
+        do_get_contract_request(conn, legal_entity_id_1, %{"contractor_legal_entity_id" => legal_entity_id_1})
+
+      assert [%{"contractor_legal_entity_id" => ^legal_entity_id_1}, _, _] = response_data
+    end
+
+    test "finds nothing", %{conn: conn, legal_entity_id_1: legal_entity_id_1} do
+      assert %{"data" => []} = do_get_contract_request(conn, legal_entity_id_1, %{"contract_number" => UUID.generate()})
+    end
+  end
+
+  defp do_get_contract_request(conn, client_id, search_params) do
+    conn =
+      conn
+      |> put_client_id_header(client_id)
+      |> get(contract_request_path(conn, :index), search_params)
+
+    json_response(conn, 200)
   end
 
   defp prepare_data(role_name \\ "OWNER") do
