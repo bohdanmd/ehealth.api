@@ -27,6 +27,7 @@ defmodule EHealth.Factories do
   use EHealth.OPSFactories.MedicationRequestFactory
   use EHealth.OPSFactories.MedicationDispenseFactory
   use EHealth.OPSFactories.MedicationDispenseDetailsFactory
+  use EHealth.OPSFactories.ContractFactory
 
   # MPI
   use EHealth.MPIFactories.PersonFactory
@@ -38,6 +39,10 @@ defmodule EHealth.Factories do
     factory
     |> build(attrs)
     |> repo_insert!(type)
+  end
+
+  def string_params_for(factory, attrs \\ []) do
+    ExMachina.Ecto.string_params_for(__MODULE__, factory, attrs)
   end
 
   defp repo_insert!(data, :il), do: Repo.insert!(data)
