@@ -8,6 +8,8 @@ defmodule EHealth.ContractRequests do
   import EHealth.Utils.Connection, only: [get_consumer_id: 1, get_client_id: 1]
 
   alias Ecto.Adapters.SQL
+  alias EHealth.API.MediaStorage
+  alias EHealth.API.Signature
   alias EHealth.ContractRequests.ContractRequest
   alias EHealth.ContractRequests.Search
   alias EHealth.Divisions.Division
@@ -18,9 +20,12 @@ defmodule EHealth.ContractRequests do
   alias EHealth.Parties.Party
   alias EHealth.Validators.Reference
   alias EHealth.Validators.JsonSchema
+  alias EHealth.Validators.Preload
   alias EHealth.Repo
   alias EHealth.Utils.NumberGenerator
   alias EHealth.EventManager
+  alias EHealth.Web.ContractRequestView
+  alias EHealth.Man.Templates.ContractRequestPrintoutForm
   import Ecto.Changeset
   import Ecto.Query
   require Logger
@@ -73,8 +78,9 @@ defmodule EHealth.ContractRequests do
            |> Map.put("status", ContractRequest.status(:new))
            |> Map.put("inserted_by", user_id)
            |> Map.put("updated_by", user_id),
-         %Ecto.Changeset{valid?: true} = changes <- changeset(%ContractRequest{}, insert_params) do
-      Repo.insert(changes)
+         %Ecto.Changeset{valid?: true} = changes <- changeset(%ContractRequest{}, insert_params),
+         {:ok, contract_request} <- Repo.insert(changes) do
+      {:ok, contract_request, preload_references(contract_request)}
     end
   end
 
@@ -94,8 +100,9 @@ defmodule EHealth.ContractRequests do
            params
            |> Map.delete("id")
            |> Map.put("updated_by", user_id),
-         %Ecto.Changeset{valid?: true} = changes <- update_changeset(contract_request, update_params) do
-      Repo.update(changes)
+         %Ecto.Changeset{valid?: true} = changes <- update_changeset(contract_request, update_params),
+         {:ok, contract_request} <- Repo.update(changes) do
+      {:ok, contract_request, preload_references(contract_request)}
     end
   end
 
@@ -116,8 +123,111 @@ defmodule EHealth.ContractRequests do
            |> Map.put("updated_by", user_id)
            |> Map.put("contract_number", get_contract_number(params))
            |> Map.put("status", ContractRequest.status(:approved)),
-         %Ecto.Changeset{valid?: true} = changes <- approve_changeset(contract_request, update_params) do
-      Repo.update(changes)
+         %Ecto.Changeset{valid?: true} = changes <- approve_changeset(contract_request, update_params),
+         {:ok, printout_form} <- ContractRequestPrintoutForm.render(apply_changes(changes), headers),
+         %Ecto.Changeset{valid?: true} = changes <- put_change(changes, :printout_content, printout_form),
+         data <-
+           Phoenix.View.render(
+             ContractRequestView,
+             "show.json",
+             contract_request: apply_changes(changes),
+             references: preload_references(apply_changes(changes))
+           ),
+         %Ecto.Changeset{valid?: true} = changes <- put_change(changes, :data, data),
+         {:ok, contract_request} <- Repo.update(changes),
+         _ <- EventManager.insert_change_status(contract_request, contract_request.status, user_id) do
+      {:ok, contract_request, preload_references(contract_request)}
+    end
+  end
+
+  def terminate(headers, client_type, params) do
+    client_id = get_client_id(headers)
+    user_id = get_consumer_id(headers)
+
+    with {:ok, %ContractRequest{} = contract_request} <- get_contract_request(client_id, client_type, params["id"]),
+         {:contractor_owner, :ok} <- {:contractor_owner, validate_contractor_owner_id(user_id, contract_request)},
+         true <- contract_request.status != ContractRequest.status(:signed),
+         update_params <-
+           params
+           |> Map.put("status", ContractRequest.status(:terminated))
+           |> Map.put("updated_by", user_id),
+         %Ecto.Changeset{valid?: true} = changes <- terminate_changeset(contract_request, update_params),
+         {:ok, contract_request} <- Repo.update(changes),
+         _ <- EventManager.insert_change_status(contract_request, contract_request.status, user_id) do
+      {:ok, contract_request, preload_references(contract_request)}
+    else
+      false ->
+        {:error, {:"422", "Incorrect status of contract_request to modify it"}}
+
+      {:contractor_owner, _} ->
+        {:error, {:forbidden, "User is not allowed to perform this action"}}
+
+      error ->
+        error
+    end
+  end
+
+  def sign_nhs(headers, client_type, %{"id" => id} = params) do
+    client_id = get_client_id(headers)
+    user_id = get_consumer_id(headers)
+    params = Map.delete(params, "id")
+
+    with {:ok, %ContractRequest{} = contract_request, references} <- get_by_id(headers, client_type, id),
+         :ok <- JsonSchema.validate(:contract_request_sign, params),
+         {_, true} <- {:client_id, client_id == contract_request.nhs_legal_entity_id},
+         {_, %Party{id: party_id}} <- {:employee, Parties.get_by_user_id(user_id)},
+         {_, %{entries: [employee]}} <-
+           {:employee,
+            Employees.list(%{
+              "party_id" => party_id,
+              "ids" => contract_request.nhs_signer_id,
+              "legal_entity_id" => client_id,
+              "status" => Employee.status(:approved)
+            })},
+         {_, false} <- {:already_signed, contract_request.nhs_signed},
+         {:ok, %{"data" => %{"content" => content, "signer" => signer}}} <- decode_signed_content(params, headers),
+         :ok <- validate_content(contract_request, content),
+         :ok <- validate_status(contract_request, ContractRequest.status(:approved)),
+         :ok <- validate_employee_divisions(contract_request),
+         :ok <- validate_start_date(contract_request),
+         :ok <- validate_contractor_legal_entity(contract_request),
+         :ok <- validate_nhs_legal_entity(contract_request),
+         :ok <- validate_contractor_owner_id(user_id, contract_request),
+         :ok <- save_signed_content(contract_request, params, headers),
+         update_params <-
+           params
+           |> Map.delete("id")
+           |> Map.put("updated_by", user_id)
+           |> Map.put("nhs_signed", true) do
+      Repo.update(update_params)
+    else
+      {:client_id, _} -> {:error, {:forbidden, "Invalid client_id"}}
+      {:employee, _} -> {:error, {:"422", "Employee is not allowed to sign"}}
+      {:already_signed, _} -> {:error, {:"422", "The contract was already signed by NHS"}}
+      error -> error
+    end
+  end
+
+  defp validate_content(%ContractRequest{data: data}, content) do
+    if data == content,
+      do: :ok,
+      else: {:error, {:"422", "Signed content does not match the previously created content"}}
+  end
+
+  defp save_signed_content(%ContractRequest{id: id}, %{"signed_content" => signed_content}, headers) do
+    signed_content
+    |> MediaStorage.store_signed_content(:contract_request_bucket, id, headers)
+    |> case do
+      {:ok, _} -> :ok
+      err -> err
+    end
+  end
+
+  defp decode_signed_content(%{"signed_content" => signed_content, "signed_content_encoding" => encoding}, headers) do
+    case Signature.decode_and_validate(signed_content, encoding, headers) do
+      {:ok, %{"data" => %{"is_valid" => false, "validation_error_message" => error}}} -> {:error, {:bad_request, error}}
+      {:ok, %{"data" => %{"is_valid" => true}} = result} -> {:ok, result}
+      error -> error
     end
   end
 
@@ -144,11 +254,22 @@ defmodule EHealth.ContractRequests do
   end
 
   def approve_changeset(%ContractRequest{} = contract_request, params) do
-    fields = ~w(nhs_signer_base nhs_contract_price nhs_payment_method issue_city status)a
+    fields = ~w(nhs_signer_base nhs_contract_price nhs_payment_method issue_city status updated_by contract_number)a
 
     contract_request
     |> cast(params, fields)
     |> validate_required(fields)
+  end
+
+  defp preload_references(%ContractRequest{} = contract_request) do
+    Preload.preload_references(contract_request, [
+      {:contractor_legal_entity_id, :legal_entity},
+      {:nhs_legal_entity_id, :legal_entity},
+      {:contract_owner_id, :employee},
+      {:nhs_signer_id, :employee},
+      {[:contractor_employee_divisions, "$", "employee_id"], :employee},
+      {[:contractor_employee_divisions, "$", "division_id"], :division}
+    ])
   end
 
   defp terminate_pending_contracts(params) do
@@ -476,7 +597,7 @@ defmodule EHealth.ContractRequests do
     client_id = get_client_id(headers)
 
     with {:ok, %ContractRequest{} = contract_request} <- get_contract_request(client_id, client_type, id) do
-      {:ok, contract_request}
+      {:ok, contract_request, preload_references(contract_request)}
     end
   end
 
@@ -524,6 +645,29 @@ defmodule EHealth.ContractRequests do
     end
   end
 
+  defp validate_nhs_legal_entity(%ContractRequest{nhs_legal_entity_id: legal_entity_id}) do
+    with {:ok, legal_entity} <- Reference.validate(:legal_entity, legal_entity_id, "$.nhs_legal_entity_id"),
+         true <- legal_entity.status == LegalEntity.status(:active) do
+      :ok
+    else
+      false ->
+        {:error,
+         [
+           {
+             %{
+               description: "NHS legal entity in contract request should be active",
+               params: [],
+               rule: :invalid
+             },
+             "$.nhs_legal_entity_id"
+           }
+         ]}
+
+      error ->
+        error
+    end
+  end
+
   defp get_contract_request_sequence do
     case SQL.query(Repo, "SELECT nextval('contract_request');", []) do
       {:ok, %Postgrex.Result{rows: [[sequence]]}} ->
@@ -532,37 +676,6 @@ defmodule EHealth.ContractRequests do
       _ ->
         Logger.error("Can't get contract_request sequence")
         {:error, %{"type" => "internal_error"}}
-    end
-  end
-
-  def terminate(headers, client_type, params) do
-    client_id = get_client_id(headers)
-    user_id = get_consumer_id(headers)
-
-    contract_request =
-      with {:ok, %ContractRequest{} = contract_request} <- get_contract_request(client_id, client_type, params["id"]),
-           {:contractor_owner, :ok} <- {:contractor_owner, validate_contractor_owner_id(user_id, contract_request)},
-           true <- contract_request.status != ContractRequest.status(:signed),
-           update_params <-
-             params
-             |> Map.put("status", ContractRequest.status(:terminated))
-             |> Map.put("updated_by", user_id),
-           %Ecto.Changeset{valid?: true} = changes <- terminate_changeset(contract_request, update_params) do
-        Repo.update(changes)
-      else
-        false ->
-          {:error, {:"422", "Incorrect status of contract_request to modify it"}}
-
-        {:contractor_owner, _} ->
-          {:error, {:forbidden, "User is not allowed to perform this action"}}
-
-        error ->
-          error
-      end
-
-    with {:ok, contract_request} <- contract_request,
-         _ <- EventManager.insert_change_status(contract_request, contract_request.status, user_id) do
-      {:ok, contract_request}
     end
   end
 

@@ -793,6 +793,10 @@ defmodule EHealth.Web.ContractRequestControllerTest do
         {:ok, %{"data" => [%{"role_name" => "NHS ADMIN SIGNER"}]}}
       end)
 
+      expect(ManMock, :render_template, fn _, _, _ ->
+        {:ok, "<html></html>"}
+      end)
+
       user_id = UUID.generate()
       party_user = insert(:prm, :party_user, user_id: user_id)
       legal_entity = insert(:prm, :legal_entity)
@@ -1174,6 +1178,87 @@ defmodule EHealth.Web.ContractRequestControllerTest do
       |> get(contract_request_path(conn, :index), search_params)
 
     json_response(conn, 200)
+  end
+
+  describe "sign nhs" do
+    test "no contract_request found", %{conn: conn} do
+      conn = put_client_id_header(conn, UUID.generate())
+      conn = patch(conn, contract_request_path(conn, :sign_nhs, UUID.generate()))
+      assert json_response(conn, 404)
+    end
+
+    test "invalid client_id", %{conn: conn} do
+      contract_request = insert(:il, :contract_request)
+      conn = put_client_id_header(conn, get_client_admin())
+
+      conn =
+        patch(conn, contract_request_path(conn, :sign_nhs, contract_request.id), %{
+          "signed_content" => "",
+          "signed_content_encoding" => "base64"
+        })
+
+      assert resp = json_response(conn, 403)
+      assert %{"message" => "Invalid client_id", "type" => "forbidden"} = resp["error"]
+    end
+
+    test "party_user not found", %{conn: conn} do
+      client_id = get_client_admin()
+      contract_request = insert(:il, :contract_request, nhs_legal_entity_id: client_id)
+      conn = put_client_id_header(conn, client_id)
+
+      conn =
+        patch(conn, contract_request_path(conn, :sign_nhs, contract_request.id), %{
+          "signed_content" => "",
+          "signed_content_encoding" => "base64"
+        })
+
+      assert resp = json_response(conn, 422)
+      assert %{"message" => "Employee is not allowed to sign"} = resp["error"]
+    end
+
+    test "valid employee not found", %{conn: conn} do
+      client_id = get_client_admin()
+      user_id = UUID.generate()
+      insert(:prm, :party_user, user_id: user_id)
+      contract_request = insert(:il, :contract_request, nhs_legal_entity_id: client_id)
+
+      conn =
+        conn
+        |> put_client_id_header(client_id)
+        |> put_consumer_id_header(user_id)
+
+      conn =
+        patch(conn, contract_request_path(conn, :sign_nhs, contract_request.id), %{
+          "signed_content" => "",
+          "signed_content_encoding" => "base64"
+        })
+
+      assert resp = json_response(conn, 422)
+      assert %{"message" => "Employee is not allowed to sign"} = resp["error"]
+    end
+
+    test "contract_request already signed", %{conn: conn} do
+      client_id = get_client_admin()
+      user_id = UUID.generate()
+      contract_request = insert(:il, :contract_request, nhs_legal_entity_id: client_id, nhs_signed: true)
+      %{party: party} = insert(:prm, :party_user, user_id: user_id)
+      insert(:prm, :legal_entity, id: client_id)
+      insert(:prm, :employee, party: party, legal_entity_id: client_id, id: contract_request.nhs_signer_id)
+
+      conn =
+        conn
+        |> put_client_id_header(client_id)
+        |> put_consumer_id_header(user_id)
+
+      conn =
+        patch(conn, contract_request_path(conn, :sign_nhs, contract_request.id), %{
+          "signed_content" => "",
+          "signed_content_encoding" => "base64"
+        })
+
+      assert resp = json_response(conn, 422)
+      assert %{"message" => "The contract was already signed by NHS"} = resp["error"]
+    end
   end
 
   defp prepare_data(role_name \\ "OWNER") do

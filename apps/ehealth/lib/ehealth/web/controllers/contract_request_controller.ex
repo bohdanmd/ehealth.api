@@ -14,37 +14,47 @@ defmodule EHealth.Web.ContractRequestController do
     end
   end
 
-  def create(conn, params) do
-    with {:ok, %ContractRequest{} = contract_request} <- ContractRequests.create(conn.req_headers, params) do
-      render(conn, "show.json", contract_request: contract_request)
+  def create(%Plug.Conn{req_headers: headers} = conn, params) do
+    with {:ok, %ContractRequest{} = contract_request, references} <- ContractRequests.create(headers, params) do
+      render(conn, "show.json", contract_request: contract_request, references: references)
     end
   end
 
-  def update(conn, params) do
-    with {:ok, %ContractRequest{} = contract_request} <- ContractRequests.update(conn.req_headers, params) do
-      render(conn, "show.json", contract_request: contract_request)
+  def update(%Plug.Conn{req_headers: headers} = conn, params) do
+    with {:ok, %ContractRequest{} = contract_request, references} <- ContractRequests.update(headers, params) do
+      render(conn, "show.json", contract_request: contract_request, references: references)
     end
   end
 
   def show(%Plug.Conn{req_headers: headers} = conn, %{"id" => id}) do
     client_type = conn.assigns.client_type
 
-    with {:ok, %ContractRequest{} = contract_request} <- ContractRequests.get_by_id(headers, client_type, id) do
-      render(conn, "show.json", contract_request: contract_request)
+    with {:ok, %ContractRequest{} = contract_request, references} <-
+           ContractRequests.get_by_id(headers, client_type, id) do
+      render(conn, "show.json", contract_request: contract_request, references: references)
     end
   end
 
-  def approve(conn, params) do
-    with {:ok, %ContractRequest{} = contract_request} <- ContractRequests.approve(conn.req_headers, params) do
-      render(conn, "show.json", contract_request: contract_request)
+  def approve(%Plug.Conn{req_headers: headers} = conn, params) do
+    with {:ok, %ContractRequest{} = contract_request, references} <- ContractRequests.approve(headers, params) do
+      render(conn, "show.json", contract_request: contract_request, references: references)
     end
   end
 
   def terminate(%Plug.Conn{req_headers: headers} = conn, params) do
     client_type = conn.assigns.client_type
 
-    with {:ok, %ContractRequest{} = contract_request} <- ContractRequests.terminate(headers, client_type, params) do
-      render(conn, "show.json", contract_request: contract_request)
+    with {:ok, %ContractRequest{} = contract_request, references} <-
+           ContractRequests.terminate(headers, client_type, params) do
+      render(conn, "show.json", contract_request: contract_request, references: references)
+    end
+  end
+
+  def sign_nhs(%Plug.Conn{req_headers: headers} = conn, params) do
+    client_type = conn.assigns.client_type
+
+    with {:ok, %ContractRequest{} = contract_request} <- ContractRequests.sign_nhs(headers, client_type, params) do
+      render(conn, "sign_nhs.json", contract_request: contract_request)
     end
   end
 end
