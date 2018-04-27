@@ -39,4 +39,12 @@ defmodule EHealth.Web.ContractRequestController do
       render(conn, "show.json", contract_request: contract_request)
     end
   end
+
+  def terminate(%Plug.Conn{req_headers: headers} = conn, params) do
+    client_type = conn.assigns.client_type
+
+    with {:ok, %ContractRequest{} = contract_request} <- ContractRequests.terminate(headers, client_type, params) do
+      render(conn, "show.json", contract_request: contract_request)
+    end
+  end
 end

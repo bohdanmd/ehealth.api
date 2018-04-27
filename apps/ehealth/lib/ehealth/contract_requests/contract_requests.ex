@@ -20,7 +20,9 @@ defmodule EHealth.ContractRequests do
   alias EHealth.Validators.JsonSchema
   alias EHealth.Repo
   alias EHealth.Utils.NumberGenerator
-
+  alias EHealth.EventManager
+  import Ecto.Changeset
+  import Ecto.Query
   require Logger
 
   @mithril_api Application.get_env(:ehealth, :api_resolvers)[:mithril]
@@ -495,7 +497,7 @@ defmodule EHealth.ContractRequests do
     if id == legal_entity_id do
       :ok
     else
-      {:error, {:forbidden, "You are not allowed to view this contract request"}}
+      {:error, {:forbidden, "User is not allowed to perform this action"}}
     end
   end
 
@@ -531,5 +533,44 @@ defmodule EHealth.ContractRequests do
         Logger.error("Can't get contract_request sequence")
         {:error, %{"type" => "internal_error"}}
     end
+  end
+
+  def terminate(headers, client_type, params) do
+    client_id = get_client_id(headers)
+    user_id = get_consumer_id(headers)
+
+    contract_request =
+      with {:ok, %ContractRequest{} = contract_request} <- get_contract_request(client_id, client_type, params["id"]),
+           {:contractor_owner, :ok} <- {:contractor_owner, validate_contractor_owner_id(user_id, contract_request)},
+           true <- contract_request.status != ContractRequest.status(:signed),
+           update_params <-
+             params
+             |> Map.put("status", ContractRequest.status(:terminated))
+             |> Map.put("updated_by", user_id),
+           %Ecto.Changeset{valid?: true} = changes <- terminate_changeset(contract_request, update_params) do
+        Repo.update(changes)
+      else
+        false ->
+          {:error, {:"422", "Incorrect status of contract_request to modify it"}}
+
+        {:contractor_owner, _} ->
+          {:error, {:forbidden, "User is not allowed to perform this action"}}
+
+        error ->
+          error
+      end
+
+    with {:ok, contract_request} <- contract_request,
+         _ <- EventManager.insert_change_status(contract_request, contract_request.status, user_id) do
+      {:ok, contract_request}
+    end
+  end
+
+  def terminate_changeset(%ContractRequest{} = contract_request, params) do
+    fields = ~w(status status_reason updated_by)a
+
+    contract_request
+    |> cast(params, fields)
+    |> validate_required(fields)
   end
 end
